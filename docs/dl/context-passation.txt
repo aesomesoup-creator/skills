@@ -1,0 +1,107 @@
+---
+name: context-passation
+description: "Surveille la longueur de conversation et écrit une fiche de passation dans le vault juste avant la compaction automatique (ou avant un /new), puis la réinjecte pour reprendre sans rien perdre."
+version: 2.2.0
+author: aesomesoup
+tags: [contexte, passation, memoire, compaction, reset, session]
+---
+
+# Context passation — une fiche avant la compaction, et la reprise après
+
+## Quand déclencher
+
+Déclenche la passation quand AU MOINS UN de ces signaux est vrai :
+- un message `[context-passation] Contexte à Xk tokens` apparaît : le hook a mesuré les tokens
+  réels de la session, à un message de l'utilisateur ou après un outil pendant que tu travailles
+  seul. Il te dit aussi quoi faire une fois la fiche écrite : continuer, ou demander `/new`
+- tu remarques que tu perds le fil (tu reposes une question déjà répondue, tu répètes une action, tu confonds deux sujets)
+- l'utilisateur te dit explicitement « on sature », « reset », « nouvelle session »
+
+Ne déclenche PAS au milieu d'une tâche critique en cours (un build ou des tests qui tournent, un
+déploiement, une migration, une commande en arrière-plan, un fichier en cours d'écriture).
+Attends la fin de l'action en cours.
+
+## Ce que tu fais au déclenchement
+
+1. Écris la passation en une seule commande Bash. `--dir` est le dossier principal de la session
+   (celui où Claude Code a été lancé). Le script ajoute le titre, la date et le dossier, archive
+   l'ancienne passation du projet, et commit/pousse si le dossier des passations est dans git.
+   Le message `[context-passation]` du hook donne la commande exacte de cette machine (son
+   interpréteur, son chemin) : prends-la telle quelle. Sans ce message, `<dossier de ce skill>` est
+   le « Base directory for this skill » affiché au chargement du skill ; sous Windows, `python`
+   remplace `python3` s'il manque.
+
+```bash
+python3 "<dossier de ce skill>/passation.py" write --dir "<dossier principal de la session>" <<'FIN'
+## Ce qui était en cours
+- liste à puces des tâches/sujets actifs au moment de la fiche
+
+## Décisions prises cette session
+- liste à puces des décisions stables (pas des actions ponctuelles)
+
+## À ne pas oublier
+- faits, préférences, ou contexte que la suite doit avoir en tête
+
+## Prochaine étape
+- UNE phrase : ce que l'utilisateur attend juste après
+
+## Fichiers à relire
+- 5 au plus : seulement ceux dont la prochaine étape a besoin (la reprise ne relira qu'eux)
+
+## Liens utiles
+- chemins de fichiers créés/modifiés cette session
+- liens (PR, tickets, docs…)
+FIN
+```
+
+2. Le script affiche le chemin du fichier. Ensuite :
+   - **le cas normal** (le message du hook dit de continuer, ou tu as écrit la fiche parce que tu
+     perdais le fil) : ne demande pas `/new` et ne t'arrête pas. Dis-le en une ligne : « Fiche de
+     passation écrite : `<chemin affiché>`. La compaction automatique prendra le relais, je
+     continue. » Puis reprends ton travail là où tu en étais.
+   - **seulement si le message du hook demande `/new`** (compaction automatique coupée) **ou si
+     l'utilisateur veut repartir à zéro** : dis exactement « Contexte saturé. J'ai écrit
+     `<chemin affiché>`. Envoie `/new` puis `go`, et je reprends. »
+
+   S'il affiche « Pas poussée sur git », la passation existe quand même sur cette machine :
+   ajoute-le en une ligne, sans bloquer.
+
+## Après la compaction automatique
+
+Rien à faire à la main : le hook SessionStart réinjecte la fiche écrite juste avant, à côté du
+résumé de la compaction. Ta prochaine commande l'archive dans `historique/<projet>.md` :
+`python3 "<dossier de ce skill>/passation.py" done --dir "<dossier principal de la session>"`
+Puis continue exactement là où tu en étais, sans rien redemander, en ne relisant que les
+« Fichiers à relire » dont tu as besoin.
+
+## Après un /new
+
+Rien à faire à la main : après `/new`, le hook SessionStart injecte la passation du projet dans
+la nouvelle session (après un `git pull` si le dossier est un dépôt : elle peut venir d'une autre machine).
+- au premier message de l'utilisateur, même un simple « go », ta toute première commande
+  archive la passation (son contenu est déjà dans ton contexte) ; elle passe en tête de
+  `historique/<projet>.md`, le journal des sessions du projet. Le hook donne la commande toute
+  faite ; sinon :
+  `python3 "<dossier de ce skill>/passation.py" done --dir "<dossier principal de la session>"`
+- puis reprends exactement à la « Prochaine étape » sans rien redemander, en ne relisant que les
+  « Fichiers à relire » : ne réexplore pas tout le projet
+
+Session endormie (grosse session dont le cache a expiré, plus d'une heure sans message) : rien ne
+bloque. Le message part, la conversation est relue en entier et tu continues, sans proposer `/new`.
+
+Une garde facultative existe (`garde_tokens` dans `config.json`, coupée par défaut) : le hook
+bloque alors le message et propose `/new`. La fiche est dans ce cas tirée du transcript, sans
+modèle : derniers messages, dernière réponse, fichiers modifiés, et le message bloqué comme
+« Prochaine étape ».
+
+S'il ouvre une nouvelle fenêtre au lieu d'envoyer `/new`, le hook signale la passation et tu lui
+proposes de reprendre ; archive-la dès qu'il a choisi. Pour la relire à la main : même commande
+avec `show` au lieu de `done`.
+
+## Règles
+
+- Ne jamais écrire dans le fichier de passation des secrets, tokens, mots de passe : cite le nom de la variable et l'endroit où elle vit.
+- Le fichier de passation est court : max 30 lignes. Pas de roman.
+- Une seule passation en attente par projet : `write` archive l'ancienne dans l'historique. Ne touche jamais aux passations des autres projets, d'autres sessions Claude tournent peut-être en parallèle.
+- Passe toujours par `passation.py` : n'écris ni ne modifie rien d'autre dans le dossier des passations ou le vault qui le contient.
+- Jamais dans un sous-agent : seul l'agent qui parle à l'utilisateur écrit la fiche.

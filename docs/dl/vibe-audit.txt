@@ -1,0 +1,102 @@
+---
+name: vibe-audit
+description: Audit complet d'un projet vibe codé (site, app, SaaS, API, mobile) avant mise en prod, sur une checklist tirée de vidéos de veille sur le vibe coding - cadrage, secrets, authentification, contrôle d'accès et RLS, production (webhooks, backups, erreurs, dépendances), légal FR/UE (RGPD, cookies, CGU), accessibilité/UI et qualité du code. Rend un verdict prêt / pas prêt et un rapport VIBE-AUDIT.md avec preuves fichier:ligne, puis propose de corriger. Utiliser sur /vibe-audit [sections] [chemin], ou quand l'utilisateur dit "audite mon projet", "checklist avant prod", "est-ce que je peux mettre en ligne", "mon app est prête ?", "vérifie la sécu / le RGPD de mon site", "audit vibe coding", "pre-launch audit".
+argument-hint: "[cad|sec|auth|acc|prod|leg|ui|code] [chemin]"
+---
+
+# vibe-audit
+
+Passe un projet au crible de `references/checklist.md` (8 sections : CAD cadrage, SEC secrets, AUTH authentification, ACC accès et données, PROD production, LEG légal, UI interface, CODE qualité) et dit s'il est prêt pour la prod, preuves à l'appui.
+
+## Arguments
+
+- aucun : audit complet du dossier courant ;
+- une ou plusieurs sections (`sec auth acc`) : seulement celles-là ;
+- un chemin : auditer ce dossier au lieu du dossier courant.
+
+## Règles de l'audit (non négociables)
+
+1. **Lecture seule jusqu'au rapport.** Aucune modification du code, aucune installation de paquet ou d'outil sans accord. Autorisé : git en lecture, Grep/Glob/Read, `npm audit` et équivalents, et les scripts `build` / `lint` / `typecheck` / `test` du projet. Jamais `deploy`, `migrate`, `seed`, `db push`, ni un script qui touche la prod.
+2. **Secrets.** Ne jamais ouvrir `.env`, `.env.local`, `.env.production`, `.secrets/` ou équivalents ; seuls `.env.example` / `.env.sample` se lisent. L'état git des `.env` se vérifie avec `git check-ignore`, `git ls-files`, `git log`. Pour les motifs de clés, Grep d'abord en `files_with_matches`, puis ne citer que `fichier:ligne` + nom de la variable + 4 premiers caractères au maximum. Jamais une valeur complète, ni dans la conversation ni dans le rapport.
+3. **Pas de ✅ sans preuve.** Chaque statut repose sur un `fichier:ligne`, une sortie de commande ou une absence constatée (« aucun match pour … »). Ce qui ne se voit pas dans le code (dashboard Supabase, plan d'hébergement, réglages Stripe) est ❓ avec l'endroit exact où vérifier, jamais deviné.
+
+## Étapes
+
+### 1. Profil du projet
+
+Lire ce qui existe parmi : `package.json` (et workspaces), `requirements.txt` / `pyproject.toml`, `composer.json`, `app.json` / `eas.json`, `next.config.*`, `vite.config.*`, `nuxt.config.*`, `supabase/` (`config.toml`, `migrations/`, `functions/`), `firebase.json` / `firestore.rules`, `prisma/schema.prisma`, `vercel.json` / `netlify.toml`, `.github/workflows/`, `.env.example`, `CLAUDE.md`, `README*`.
+
+En déduire les drapeaux qui décident des points applicables (condition « Si » de chaque point) :
+`web` · `mobile` · `api` · `auth` (maison ou fournisseur : lequel) · `db` (accessible depuis le client ?) · `paiement` · `vente` · `upload` · `webhooks` · `ia` (API payantes : LLM, images) · `tracking` · `agents` (agents autonomes, boucles) · `git` · `déployé`.
+
+Un point dont la condition n'est pas remplie passe en N/A, avec la raison en quelques mots.
+
+### 2. Dérouler la checklist
+
+Lire `references/checklist.md` (seulement les sections demandées). Pour chaque point applicable, faire les vérifications de la rubrique « Vérifier » et attribuer un statut :
+
+- ✅ OK, preuve à l'appui
+- ⚠️ partiel : en place mais incomplet (rate limit sur le login mais pas sur le reset)
+- ❌ KO : absent ou faux
+- ❓ à vérifier à la main, hors code : dire où
+- N/A : ne s'applique pas
+
+Un ❌ ou un ⚠️ prend la sévérité indiquée sur le point (🔴 / 🟠 / 🟡) ; un ⚠️ ne descend d'un cran que si le risque restant est clairement mineur.
+
+Exclure des recherches : `node_modules`, `.git`, `dist`, `build`, `.next`, `.nuxt`, `.output`, `.vercel`, `.expo`, `coverage`, `vendor`, les lockfiles et les fichiers minifiés.
+
+**Gros projet** (plus de ~300 fichiers source, ou monorepo) : lancer en parallèle trois sous-agents `general-purpose`, un par groupe : (SEC + AUTH + ACC), (PROD + CODE + CAD), (LEG + UI). Donner à chacun le profil de l'étape 1, le texte de ses sections copié depuis `checklist.md`, les trois règles ci-dessus, et ce format de retour, une ligne par point : `ID | statut | sévérité | preuve (fichier:ligne ou commande) | correctif en une phrase`. Fusionner ensuite.
+
+### 3. Rapport
+
+Si `VIBE-AUDIT.md` existe déjà à la racine du projet audité, relever son score et sa date pour afficher la progression, puis le remplacer par :
+
+```markdown
+# Vibe audit — <projet> — <AAAA-MM-JJ>
+
+**Profil** : <stack> · auth <fournisseur | maison | —> · db <…> · paiement <…> · …
+**Verdict** : ❌ PAS PRÊT pour la prod, <n> bloquant(s)   (ou : ✅ PRÊT, aucun bloquant, <n> points importants)
+**Score** : <points>/<applicables> · 🔴 <n> · 🟠 <n> · 🟡 <n> · ❓ <n>   (précédent : <x>/<y> le <date>)
+
+## 🔴 Bloquants, à corriger avant toute mise en ligne
+1. **SEC-2 · .env commité** — preuve : `git log` montre `.env` ajouté au commit a1b2c3d — correctif : révoquer et régénérer STRIPE_SECRET_KEY chez Stripe, puis `git rm --cached .env`
+
+## 🟠 Importants
+## 🟡 Améliorations
+## ❓ À vérifier à la main
+- **ACC-2 · RLS** — pas de migrations dans le repo → Supabase > Advisors > Security Advisor
+
+## Détail
+| ID | Point | Statut | Preuve / remarque |
+|----|-------|--------|-------------------|
+(une ligne par point, N/A compris, dans l'ordre de la checklist)
+
+---
+Audit statique généré par /vibe-audit : il ne remplace ni un test d'intrusion ni un avis juridique.
+```
+
+- **Verdict** : PRÊT seulement s'il ne reste aucun 🔴, ni ❌ ni ⚠️.
+- **Score** : ✅ = 1 point, ⚠️ = 0,5, le reste 0, sur le nombre de points applicables (N/A exclus, ❓ inclus : ce qui n'est pas vérifié n'est pas acquis).
+- Pour un audit partiel (sections en argument), le signaler dans le titre et ne comparer au score précédent que si les mêmes sections étaient auditées.
+
+### 4. Réponse dans la conversation
+
+Ne pas recopier le tableau. Donner : le verdict, le score et sa progression, la liste des 🔴, les 3 à 5 🟠 les plus importants, le nombre de ❓, et le chemin du rapport. Rappeler en une ligne que le rapport décrit des failles : ne pas le commiter sur un repo public.
+
+Puis demander : « Je corrige les bloquants ? », et attendre la réponse.
+
+### 5. Corrections, seulement après accord
+
+- Dans l'ordre 🔴 → 🟠 → 🟡, un point à la fois, en revérifiant le point après chaque correction.
+- Dire clairement ce que le code ne peut pas réparer : une clé qui a fuité doit être **révoquée et régénérée chez le fournisseur** par l'utilisateur ; un réglage de dashboard se fait dans le dashboard.
+- Les pages légales générées sont des brouillons, à faire relire.
+- À la fin, relancer l'audit sur les sections touchées et mettre à jour `VIBE-AUDIT.md`.
+
+## Skills complémentaires, s'ils sont installés
+
+- `ponytail` : revue approfondie pour CODE-1.
+- `/security-review` (intégré à Claude Code) : revue sécurité du diff avant un commit, en complément de cet audit global.
+
+## Faire évoluer la checklist
+
+Nouvelle vidéo, nouveau piège : ajouter le point dans la bonne section de `references/checklist.md`, au même format (ID suivant, sévérité, Source, Si, Pourquoi, Vérifier, Corriger), et sa source dans la liste en tête du fichier.

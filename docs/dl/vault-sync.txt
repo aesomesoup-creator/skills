@@ -1,0 +1,43 @@
+---
+name: vault-sync
+description: Pousse le contexte de tous les projets (memoire Claude Code de la machine + docs des projets de dossiers supplementaires) dans ton vault Obsidian, dossier contextes/, et regenere la carte vault-index.md. Utiliser sur /vault-sync ou quand l'utilisateur demande de synchroniser, pusher ou sauvegarder le contexte / la memoire des projets vers Obsidian.
+---
+
+# vault-sync
+
+Synchronise vers le vault Obsidian (`~/Documents/mon-vault`, ou le dossier que donne la variable `OBSIDIAN_VAULT`,
+dossier `contextes/<projet>/`) puis commit et push. Idempotent : rien n'est
+pousse si rien n'a change.
+
+Sources fusionnees par nom de projet :
+- la memoire Claude Code de ce PC (`~/.claude/projects/<slug>/memory/*.md`) + le `CLAUDE.md` du projet ;
+- les projets des dossiers `EXTRA_ROOTS` (aucun par defaut ; la variable `VAULT_EXTRA_ROOTS`
+  en donne, par exemple un Drive synchronise depuis un autre PC) : leurs docs `.md`
+  (README, CLAUDE.md, OVERVIEW, rapports graphify…, 8 max, liens `[[…]]` neutralises),
+  plus stack (package.json), dernier commit git et arborescence dans la note d'index.
+
+Plusieurs machines : le PC ecrit `contextes/<projet>/` (manifeste `.claude-sync.json`, index
+`contextes.md`), le Mac `contextes/<projet>-mac/` (`.claude-sync-mac.json`, `contextes-mac.md`).
+Chacune ne retire que ce qu'elle a ecrit. Machine choisie par `VAULT_MACHINE` (defaut : vide sous
+Windows, `mac` sous macOS). Si deux machines poussent en meme temps, le conflit sur `vault-index.md`
+est regle automatiquement (la carte est recalculee) ; tout autre conflit annule la passe, comme avant.
+
+Il regenere aussi `vault-index.md` a la racine : la carte de toutes les notes du
+vault (chemin, titre, resume, liens), que les agents lisent avant d'ouvrir quoi que ce soit.
+
+## Etapes
+
+1. Lance :
+   ```
+   python ~/.claude/skills/vault-sync/sync.py          (Mac : python3)
+   ```
+   (`--dry-run` pour voir ce qui changerait sans ecrire. Variable `VAULT_EXTRA_ROOTS`
+   = chemins separes par `;` pour changer les dossiers supplementaires.)
+2. Rapporte a l'utilisateur, en une ou deux phrases : nombre de projets, notes ecrites / retirees, et si un commit a ete pousse. Cite le message d'erreur tel quel s'il y en a un (vault occupe, pull impossible, push refuse, dossier supplementaire absent = ses projets sont simplement ignores ce tour-ci).
+3. Rappelle, si utile, que la meme synchro tourne automatiquement en arriere-plan a la fin de chaque tour (hook `Stop`, au plus toutes les 30 minutes, plus une tache planifiee) — ce skill sert a forcer une passe immediate.
+
+## A savoir
+
+- Les notes de `contextes/` et `vault-index.md` sont regenerees a chaque passe : ne jamais y editer a la main. Corriger plutot la fiche memoire du projet (`~/.claude/projects/<slug>/memory/`) ou la doc dans le projet lui-meme.
+- Si un dossier supplementaire n'est pas monte, la synchro est reportee (message « Synchro reportee… ») pour ne pas retirer puis remettre ses projets. Si ce dossier a disparu pour de bon, retirer son chemin de `EXTRA_ROOTS` dans `sync.py`.
+- Pour LIRE le contexte d'un autre projet depuis n'importe quelle session, utiliser `/vault-context <projet>` ou `/vault-context ?mot-cle`.

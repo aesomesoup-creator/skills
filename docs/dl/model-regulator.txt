@@ -1,0 +1,98 @@
+---
+name: model-regulator
+description: Tableau de bord du regulateur de modele (hook UserPromptSubmit qui decide a chaque prompt s'il merite Fable 5 ou Opus ; sous Opus il fait deleguer le dur a un sous-agent Fable, sous Fable il propose de redescendre). Utiliser sur /model-regulator [status | stats | on | off | test "<prompt>"], ou quand l'utilisateur dit "pourquoi tu m'as stoppe / bloque", "regle le regulateur", "il delegue trop / pas assez a Fable", "desactive le regulateur", "stats fable", "combien de prompts sous Fable".
+---
+
+# model-regulator
+
+Le travail est fait par un **hook**, pas par ce skill : `regulator.py hook` tourne avant chaque prompt
+(local, zero token), note le prompt, lit le modele courant dans le transcript et le quota Fable hebdo
+dans `~/.claude-pace/pace.db`. Ce skill sert a le piloter et a le regler.
+
+## Ce qui est possible (teste le 2026-09-21)
+
+- Un hook ne peut pas changer le modele de la session.
+- Le `model:` d'un skill invoque par Claude est ignore : l'API sert toujours le modele de la session,
+  meme quand le systeme annonce la bascule.
+- Un sous-agent lance avec `model: fable` tourne vraiment sur Fable (verifie dans son transcript).
+
+D'ou le fonctionnement :
+- **Session sous Opus (normal), mode `auto`** : un prompt qui merite Fable recoit une consigne
+  `[model-regulator] DELEGATE fable-worker|fable-deep`. Opus confie le coeur difficile a ce sous-agent
+  (`~/.claude/agents/fable-worker.md` effort high, `fable-deep.md` effort xhigh), puis verifie et integre.
+  Le sous-agent ne voit pas la conversation : le hook ecrit l'historique (prompts + reponses texte, sans
+  sorties d'outils, derniers `context_chars` caracteres) dans `~/.claude-regulator/context/<session>.md`
+  et Opus lui dit de le lire en premier.
+- **Session sous Fable** : fenetre Oui/Non qui propose `/model opus`. Sur Oui, le prompt est stoppe et
+  copie dans le presse-papiers.
+- Mode `ask` : pas de delegation, fenetre qui propose `/model fable` sous Opus.
+
+## Commandes
+
+Lance `regulator.py <cmd>` (dans le dossier de ce skill) avec le meme interpreteur Python que la commande
+du hook dans `~/.claude/settings.json` (Windows : le `python.exe` de cette commande ;
+Mac : `python3`) :
+
+| Demande | cmd |
+|---|---|
+| `/model-regulator`, "etat du regulateur" | `status` (config, quota Fable, 5 dernieres decisions) |
+| "stats", "combien sous Fable" | `stats` (7 jours : prompts sous Fable, delegations, delegations vraiment faites) |
+| "active / desactive" | `on` / `off` |
+| "comment tu classerais ce prompt" | `test "<prompt>"` (a blanc, aucun effet) |
+| "pourquoi tu m'as stoppe" | lis les dernieres lignes de `~/.claude-regulator/log.jsonl` (verdict, score, raisons, action) |
+
+Affiche la sortie telle quelle, puis une phrase de lecture si utile.
+
+## Regles de decision
+
+- Score >= `fable_min` (4 ; 3 avant le 24/09) : merite Fable. Score >= `deep_min` (8) : Fable en effort xhigh. Les deux
+  seuils bougent selon le rythme de conso Fable (voir plus bas). Signaux :
+  architecture / conception, bug coriace, deja essaye sans succes, enjeu eleve (prod, securite,
+  paiement, client), "important", "balese", raisonnement profond, gros chantier, algo, plan / spec,
+  prompt long, liste d'exigences.
+- "ok", "continue" juste apres une delegation : redelegue au meme sous-agent.
+- Sous Fable : broutille = 2 pts, prompt standard = 1 pt, prompt dur = remise a 0. Propose Opus a
+  `cooldown` (4) pts, ou des le premier prompt d'une session. Un prompt extreme recoit une consigne de
+  raisonnement profond.
+- Commandes slash et prompts trop courts : neutres.
+- Messages que l'utilisateur n'a pas tapes (`<task-notification>`, `<agent-message>`) : ignores, sans
+  log ni effet sur la delegation en cours (le 24/09, 65 des 94 verdicts Fable de la semaine en venaient).
+  La selection ou le fichier ouvert que l'IDE colle devant le prompt ne compte pas dans le score.
+- Apres un refus : silence pendant `snooze_min` (20). Apres un stop, le prompt suivant passe toujours.
+- Rythme : le quota Fable hebdo (claude-pace) est compare au rythme qui finirait a `pace_target_pct`
+  (95 %) au reset. Ecart < -20 pts : seuils -2 ; < -8 : -1 ; +-8 : 0 ; < +20 : +1 ; < +35 : +2 ; au-dela : +3.
+  `fable_min` ne descend jamais sous 2. Quota >= `quota_lock_pct` (97 %) : plus de Fable jusqu'au reset.
+  Sur 584 prompts reels (14 j), part jugee Fable : seuil 2 = 28 %, 3 = 20 %, 4 = 15 %, 5 = 12 %, 6 = 9 %.
+- Dans le prompt : `#fable` ou `ultrathink` force Fable, `#opus` force Opus, un `=` en tete saute le regulateur.
+
+## Effort
+
+Effort Fable enregistre a `high` dans `modelSettings`. Les sous-agents portent leur propre effort
+(`fable-worker` high, `fable-deep` xhigh). Pour une session Fable entiere tres dure : `/effort xhigh`
+puis `s` (cette session seulement).
+
+## Reglage
+
+`~/.claude-regulator/config.json` (cree a la demande, fusionne avec `DEFAULT_CONFIG`) :
+
+- `mode` : `auto` (defaut, delegation) | `ask`
+- `ui` : `dialog` (defaut) | `block` (stop direct sans fenetre : mieux en remote / mobile) | `warn`
+- `fable_min`, `deep_min`, `pace_target_pct`, `quota_lock_pct`, `context_chars`, `trivial_max`, `cooldown`, `snooze_min`, `dialog_timeout_s`, `clipboard`
+- `extra_fable` / `extra_trivial` : listes de regex (texte en minuscules sans accents), +2 / -2 chacune
+
+"Je finis la semaine avec du Fable en trop" : monte `pace_target_pct` (100). "Je tombe a court" :
+baisse-le. "Il delegue des choses qui ne le meritent pas" : monte `fable_min` de 1, ou ajoute le motif
+dans `extra_trivial`. "Il rate des taches dures" : ajoute le vocabulaire de l'utilisateur dans `extra_fable`. Verifie avec `test`. Signaux de base : `FABLE_SIGNALS` / `OPUS_SIGNALS`
+de `regulator.py` ; apres toute modif du script, lance `python test_regulator.py`.
+
+## Installation (nouvelle machine)
+
+Le paquet source est le zip `model-regulator` (dossiers `skills/`, `agents/`, script `install.py`).
+L'utilisateur lance lui-meme `python3 install.py` (Mac) ou `python install.py` (Windows) : copie des
+skills et agents dans `~/.claude/`, ajout du hook dans `~/.claude/settings.json` avec le bon
+interpreteur, modele par defaut `opus[1m]`, effort Fable `high` (sauvegarde `.bak-model-regulator`).
+Claude ne lance pas `install.py` sur la vraie config : le classifieur du mode auto refuse qu'il ajoute
+un hook a son propre harnais.
+
+Sans base de quota (`~/.claude-pace/pace.db`, que ce paquet ne fournit pas), le quota Fable est inconnu : seuils de base,
+sans ajustement au rythme ni verrou a 97 %.
